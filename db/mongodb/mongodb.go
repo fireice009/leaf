@@ -1,12 +1,13 @@
 package mongodb
 
 import (
-	"container/heap"
+	// "container/heap"
+	"sync"
+	"time"
+
 	"github.com/fireice009/leaf/log"
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
-	"sync"
-	"time"
 )
 
 // session
@@ -48,7 +49,8 @@ func (h *SessionHeap) Pop() interface{} {
 
 type DialContext struct {
 	sync.Mutex
-	sessions SessionHeap
+	// sessions SessionHeap
+	sessions chan *Session
 }
 
 // goroutine safe
@@ -74,12 +76,12 @@ func DialWithTimeout(url string, sessionNum int, dialTimeout time.Duration, time
 	c := new(DialContext)
 
 	// sessions
-	c.sessions = make(SessionHeap, sessionNum)
-	c.sessions[0] = &Session{s, 0, 0}
+	c.sessions = make(chan *Session, sessionNum)
+	c.sessions <- &Session{s, 0, 0}
 	for i := 1; i < sessionNum; i++ {
-		c.sessions[i] = &Session{s.New(), 0, i}
+		c.sessions <- &Session{s.New(), 0, i}
 	}
-	heap.Init(&c.sessions)
+	// heap.Init(&c.sessions)
 
 	return c, nil
 }
@@ -87,7 +89,7 @@ func DialWithTimeout(url string, sessionNum int, dialTimeout time.Duration, time
 // goroutine safe
 func (c *DialContext) Close() {
 	c.Lock()
-	for _, s := range c.sessions {
+	for s := range c.sessions {
 		s.Close()
 		if s.ref != 0 {
 			log.Error("session ref = %v", s.ref)
@@ -98,24 +100,26 @@ func (c *DialContext) Close() {
 
 // goroutine safe
 func (c *DialContext) Ref() *Session {
-	c.Lock()
-	s := c.sessions[0]
+	// c.Lock()
+	s := <-c.sessions
 	if s.ref == 0 {
-		s.Refresh()
+		if s.Ping() != nil {
+			s.Refresh()
+		}
 	}
 	s.ref++
-	heap.Fix(&c.sessions, 0)
-	c.Unlock()
-
+	// heap.Fix(&c.sessions, 0)
+	// c.Unlock()
 	return s
 }
 
 // goroutine safe
 func (c *DialContext) UnRef(s *Session) {
-	c.Lock()
+	// c.Lock()
 	s.ref--
-	heap.Fix(&c.sessions, s.index)
-	c.Unlock()
+	c.sessions <- s
+	// heap.Fix(&c.sessions, s.index)
+	// c.Unlock()
 }
 
 // goroutine safe
