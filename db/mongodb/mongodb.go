@@ -2,6 +2,7 @@ package mongodb
 
 import (
 	// "container/heap"
+
 	"sync"
 	"time"
 
@@ -82,14 +83,30 @@ func DialWithTimeout(url string, sessionNum int, dialTimeout time.Duration, time
 		c.sessions <- &Session{s.New(), 0, i}
 	}
 	// heap.Init(&c.sessions)
+	go c.poolPing()
 
 	return c, nil
+}
+
+func (c *DialContext) poolPing() {
+	defer time.AfterFunc(time.Minute, c.poolPing)
+
+	counter := len(c.sessions)
+	for i := 0; i < counter; i++ {
+		s := <-c.sessions
+		if err := s.Ping(); err != nil {
+			s.Refresh()
+			log.Error("ping error. %s", err.Error())
+		}
+		c.sessions <- s
+	}
 }
 
 // goroutine safe
 func (c *DialContext) Close() {
 	c.Lock()
-	for s := range c.sessions {
+	for len(c.sessions) > 0 {
+		s := <-c.sessions
 		s.Close()
 		if s.ref != 0 {
 			log.Error("session ref = %v", s.ref)
@@ -102,11 +119,11 @@ func (c *DialContext) Close() {
 func (c *DialContext) Ref() *Session {
 	// c.Lock()
 	s := <-c.sessions
-	if s.ref == 0 {
-		if s.Ping() != nil {
-			s.Refresh()
-		}
-	}
+	// if s.ref == 0 {
+	// 	if s.Ping() != nil {
+	// 		s.Refresh()
+	// 	}
+	// }
 	s.ref++
 	// heap.Fix(&c.sessions, 0)
 	// c.Unlock()
